@@ -20,6 +20,11 @@ from __future__ import print_function
 
 import os
 import sys
+sys.path.append('/Users/serenavinciguerra/XPSI_att4/xpsi')
+
+import sphinx_rtd_theme
+
+html_theme = "sphinx_rtd_theme"
 
 print('In source directory: ', os.getcwd())
 
