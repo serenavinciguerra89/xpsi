@@ -210,7 +210,9 @@ class HotRegion(ParameterSubspace):
                       'cede_colatitude',
                       'cede_radius',
                       'cede_azimuth',
-                      'cede_temperature']
+                      'cede_temperature',
+                      'super_temperature_edge']
+                      #'super_temperature_function']
 
     def __init__(self,
                  bounds,
@@ -218,6 +220,7 @@ class HotRegion(ParameterSubspace):
                  symmetry = True,
                  omit = False,
                  cede = False,
+                 temperature_gradient = False,
                  concentric = False,
                  sqrt_num_cells = 32,
                  min_sqrt_num_cells = 10,
@@ -238,6 +241,8 @@ class HotRegion(ParameterSubspace):
                  custom = None,
                  image_order_limit = None,
                  **kwargs):
+                 
+        self.temperature_gradient = temperature_gradient
 
         self.is_antiphased = kwargs.get('is_secondary', is_antiphased)
 
@@ -299,6 +304,10 @@ class HotRegion(ParameterSubspace):
         self.cede = cede # takes precedence below over omission setting
         self.omit = omit
         self.concentric = concentric
+        
+        print ('omit:',omit,'temperature_gradient',temperature_gradient,"self.temperature_gradient",self.temperature_gradient)
+        print
+        #self.temperature_gradient = temperature_gradient
 
         # helper callable
         class BindMe(Derive):
@@ -430,7 +439,7 @@ class HotRegion(ParameterSubspace):
                       value = values.get('cede_azimuth', None),
                       deactivate_verbosity = no_verb.get('cede_azimuth', False))
 
-        if not custom: # setup default temperature parameters
+        if not custom: # setup default temperature parameters # HERE : Q why for these parameters is "if not custom"?
             doc = """
             log10(superseding region effective temperature [K])
             """
@@ -455,9 +464,34 @@ class HotRegion(ParameterSubspace):
 
         else: # let the custom subclass handle definitions; ignore bounds
             super_temp = cede_temp = None
+        
+        
+        if not temperature_gradient:
+            bounds['super_temperature_edge'] = None
+            values['super_temperature_edge'] = 3.0 #0.0
+            no_verb['super_temperature_edge'] = True
+            #super_temp_edge = None
+            
+            #bounds['super_temperature_function'] = None
+            #values['super_temperature_function'] = 0.0
+            #no_verb['super_temperature_function'] = True
+            
+        
+        
+        doc = """
+        log10(superseding region effective temperature at the edge[K])
+        """
+        super_temp_edge = Parameter('super_temperature_edge',
+                      strict_bounds = (3.0, 7.0),
+                      bounds = bounds.get('super_temperature_edge', None),
+                      doc = doc,
+                      symbol = r'$\log_{10}(T_{s,edge}\;[\rm{K}])$$',
+                      value = values.get('super_temperature_edge', None))
+        
+        
 
-        super(HotRegion, self).__init__(phase_shift, super_colat, super_radius,
-                                        super_temp, cede_colat, cede_radius,
+        super(HotRegion, self).__init__(phase_shift, super_colat, super_radius, # HERE
+                                        super_temp, super_temp_edge, cede_colat, cede_radius,
                                         cede_azi, cede_temp,
                                         omit_colat, omit_radius, omit_azi,
                                         custom, **kwargs) # prefix in kwargs
@@ -809,6 +843,11 @@ class HotRegion(ParameterSubspace):
             return (self._super_cellArea, self._cede_cellArea)
         except AttributeError:
             return (self._super_cellArea, None)
+    
+    @property
+    def __cellTemperature(self):
+        return (self._super_cellParamVecs)
+        
 
     def __calibrate_lag(self, st, photosphere):
         """ Calibrate lag for cell mesh and normalise by pulse period. """
@@ -900,14 +939,55 @@ class HotRegion(ParameterSubspace):
                                               self._super_radiates.shape[1],
                                               2),
                                              dtype=_np.double)
+        if not self.temperature_gradient:
+            self._super_cellParamVecs[...,:-1] *= self['super_temperature'] ### TEMP HERE!!!
+        else:
+            d0 = self._super_radiates.shape[0]
+            d1 = self._super_radiates.shape[1]
+            
 
-        self._super_cellParamVecs[...,:-1] *= self['super_temperature']
+            icm = int(d0*0.5)+(d0%2-1)
+            icp = int(d0*0.5)
 
+            jcm = int(d1*0.5)+(d1%2-1)
+            jcp = int(d1*0.5)
+
+            lst = [(icm,jcm,0),(icm,jcp,0),(icp,jcm,0),(icp,jcp,0)]
+
+            for a in lst:
+                self._super_cellParamVecs[a]= self['super_temperature']
+
+            Dip = d0 - icp
+            Dim = icm+1
+
+            if Dip!=Dim:
+                print ('Error: Dip,Dim',Dip,Dim,'not the same')
+
+            Djp = d1 - jcp
+            Djm = jcm+1
+
+            if Djp!=Djm:
+                print ('Error: Djp,Djm',Djp,Djm,'not the same')
+    
+            DNmax = Dip if Dip>=Djp else Djp
+
+            DT = (self['super_temperature']- self['super_temperature_edge'])/(DNmax-1)
+
+            for i in range(Dip):
+                for j in range(Djp):
+                    if (i ==0)&(j==0):
+                        continue
+                    #ndt = i if i>=j else j
+                    ndt =_np.sqrt(i*i+j*j)
+                    lst = [(icm-i,jcm-j,0),(icp+i,jcp+j,0),(icm-i,jcp+j,0),(icp+i,jcm-j,0)]
+                    for a in lst:
+                        self._super_cellParamVecs[a] = max(self['super_temperature'] - ndt*DT,self['super_temperature_edge'])
+            
         for i in range(self._super_cellParamVecs.shape[1]):
             self._super_cellParamVecs[:,i,-1] *= self._super_effGrav
 
         try:
-            self._cede_radiates = _np.greater(self._cede_cellArea, 0.0).astype(_np.int32)
+            self._cede_radiates = _np.greater(self._cede_cellArea, 0.0).astype(_np.int32) ###  HERE
         except AttributeError:
             pass
         else:
@@ -915,7 +995,7 @@ class HotRegion(ParameterSubspace):
                                                  self._cede_radiates.shape[1],
                                                  2), dtype=_np.double)
 
-            self._cede_cellParamVecs[...,:-1] *= self['cede_temperature']
+            self._cede_cellParamVecs[...,:-1] *= self['cede_temperature'] ### TEMP HERE!!!
 
             for i in range(self._cede_cellParamVecs.shape[1]):
                 self._cede_cellParamVecs[:,i,-1] *= self._cede_effGrav
@@ -1017,6 +1097,21 @@ class HotRegion(ParameterSubspace):
                             'the omission region.')
         else:
             self._omit = omit
+    #SV#######
+    @property
+    def temperature_gradient(self):
+        """ Does the hot region defined through an omission region? """
+        return self._temperature_gradient
+
+    @temperature_gradient.setter
+    def temperature_gradient(self, temperature_gradient):
+        if not isinstance(temperature_gradient, bool):
+            raise TypeError('A boolean is required to activate or deactivate '
+                            'the omission region.')
+        else:
+            self._temperature_gradient = temperature_gradient
+
+    #fSV#######
 
     @property
     def concentric(self):
@@ -1076,6 +1171,7 @@ class HotRegion(ParameterSubspace):
         else:
             super_energies = cede_energies = energies
 
+        # HERE
         super_pulse = self._integrator(threads,
                                        st.R,
                                        st.Omega,
